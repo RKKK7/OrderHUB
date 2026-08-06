@@ -1,0 +1,9 @@
+**/target/
+**/*.iml
+**/.idea/
+.git/
+.gitignore
+**/*.log
+.env
+oms-frontend/node_modules/
+oms-frontend/dist/

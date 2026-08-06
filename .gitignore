@@ -1,0 +1,7 @@
+.env
+**/target/
+**/*.iml
+**/.idea/
+*.log
+oms-frontend/node_modules/
+oms-frontend/dist/
