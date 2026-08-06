@@ -6,8 +6,8 @@ A distributed order management platform built with **Spring Boot microservices**
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│                      React Frontend                     │
-│                    (localhost:5173)                      │
+│                      React Frontend                    │
+│                    (localhost:5173)                    │
 └────────────────────────┬───────────────────────────────┘
                          │
                          ▼
@@ -30,10 +30,10 @@ A distributed order management platform built with **Spring Boot microservices**
   └──────┬───────┘└──────┬──────┘└────────┬─────────┘
          │               │                │
          ▼               ▼                ▼
-  ┌──────────┐    ┌──────────┐     ┌──────────┐
+  ┌──────────┐    ┌───────────┐     ┌───────────┐
   │  Redis   │    │ PostgreSQL│     │ PostgreSQL│
   │          │    │ (order_db)│     │(notif_db) │
-  └──────────┘    └──────────┘     └──────────┘
+  └──────────┘    └───────────┘     └───────────┘
          │
   ┌──────────┐
   │PostgreSQL│
