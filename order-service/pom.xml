@@ -8,7 +8,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>3.3.13</version>
         <relativePath/>
     </parent>
 
@@ -16,11 +16,11 @@
     <artifactId>order-service</artifactId>
     <version>1.0.0</version>
     <name>OMS Order Service</name>
-    <description>Users, Orders, OrderItems — the orchestrator service</description>
+    <description>Users, Orders, OrderItems — orchestrator; Kafka order-event producer</description>
 
     <properties>
         <java.version>17</java.version>
-        <spring-cloud.version>2023.0.2</spring-cloud.version>
+        <spring-cloud.version>2023.0.6</spring-cloud.version>
     </properties>
 
     <dependencies>
@@ -33,8 +33,11 @@
         <!-- Eureka -->
         <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-starter-netflix-eureka-client</artifactId></dependency>
 
-        <!-- Feign — calls product-service and notification-service -->
+        <!-- Feign — SYNCHRONOUS critical path to product-service (check-and-reserve, restore-stock, low-stock). -->
         <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-starter-openfeign</artifactId></dependency>
+
+        <!-- Kafka (producer of order-events). Version managed by the Boot 3.3.13 parent. -->
+        <dependency><groupId>org.springframework.kafka</groupId><artifactId>spring-kafka</artifactId></dependency>
 
         <!-- JWT signing -->
         <dependency><groupId>io.jsonwebtoken</groupId><artifactId>jjwt-api</artifactId><version>0.12.5</version></dependency>
@@ -44,7 +47,6 @@
         <!-- Lombok -->
         <dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><optional>true</optional></dependency>
 
-        <!-- Testing -->
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
     </dependencies>
 

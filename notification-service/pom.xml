@@ -8,7 +8,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>3.3.13</version>
         <relativePath/>
     </parent>
 
@@ -16,11 +16,11 @@
     <artifactId>notification-service</artifactId>
     <version>1.0.0</version>
     <name>OMS Notification Service</name>
-    <description>Notifications — in-app + email. Leaf node — never calls other services.</description>
+    <description>Notifications — in-app + email. Kafka consumer of order-events and stock-events. Leaf node.</description>
 
     <properties>
         <java.version>17</java.version>
-        <spring-cloud.version>2023.0.2</spring-cloud.version>
+        <spring-cloud.version>2023.0.6</spring-cloud.version>
     </properties>
 
     <dependencies>
@@ -30,6 +30,10 @@
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
         <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><scope>runtime</scope></dependency>
         <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-starter-netflix-eureka-client</artifactId></dependency>
+
+        <!-- Kafka (consumer of order-events + stock-events). Version managed by Boot 3.3.13 parent. -->
+        <dependency><groupId>org.springframework.kafka</groupId><artifactId>spring-kafka</artifactId></dependency>
+
         <dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><optional>true</optional></dependency>
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
     </dependencies>

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oms.product.dto.ApiException;
 import com.oms.product.dto.ProductDTO;
+import com.oms.product.event.StockEventPublisher;
 import com.oms.product.model.Product;
 import com.oms.product.repository.ProductRepository;
 import com.oms.product.service.ProductCacheService;
@@ -22,11 +23,14 @@ public class ProductController {
 
     private final ProductRepository productRepo;
     private final ProductCacheService cache;
+    private final StockEventPublisher stockEventPublisher;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public ProductController(ProductRepository productRepo, ProductCacheService cache) {
+    public ProductController(ProductRepository productRepo, ProductCacheService cache,
+                            StockEventPublisher stockEventPublisher) {
         this.productRepo = productRepo;
         this.cache = cache;
+        this.stockEventPublisher = stockEventPublisher;
     }
 
     private void requireAdmin(String role) {
@@ -227,9 +231,20 @@ public class ProductController {
         int qty = ((Number) body.get("stockQuantity")).intValue();
         if (qty < 0) throw new ApiException(400, "stockQuantity cannot be negative");
 
+        int oldQty = p.getStockQuantity();
         p.setStockQuantity(qty);
         p = productRepo.save(p);
         cache.invalidateOnWrite(id);
+
+        // Emit STOCK_UPDATED (quantityChanged is the signed delta from the manual edit)
+        stockEventPublisher.publish("STOCK_UPDATED", p.getId(), p.getName(),
+                qty - oldQty, qty, p.getLowStockThreshold());
+        // If the admin set stock to/below threshold, also raise a low-stock alert
+        if (qty <= p.getLowStockThreshold()) {
+            stockEventPublisher.publish("LOW_STOCK_ALERT", p.getId(), p.getName(),
+                    qty - oldQty, qty, p.getLowStockThreshold());
+        }
+
         return ProductMapper.toAdminDTO(p);
     }
 

@@ -8,7 +8,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>3.3.13</version>
         <relativePath/>
     </parent>
 
@@ -20,17 +20,18 @@
 
     <properties>
         <java.version>17</java.version>
-        <spring-cloud.version>2023.0.2</spring-cloud.version>
+        <spring-cloud.version>2023.0.6</spring-cloud.version>
     </properties>
 
     <dependencies>
-        <!-- Spring Cloud Gateway (WebFlux — do NOT add spring-boot-starter-web) -->
+        <!-- Spring Cloud Gateway (reactive/WebFlux). On Spring Cloud 2023.0.x the
+             starter is the classic name. Do NOT add spring-boot-starter-web. -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-gateway</artifactId>
         </dependency>
 
-        <!-- Eureka Client -->
+        <!-- Eureka Client (brings spring-cloud-loadbalancer for lb:// routing) -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
@@ -42,7 +43,7 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- JWT -->
+        <!-- JWT (validate tokens signed by order-service) -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>

@@ -19,6 +19,14 @@ public class Notification {
     @Column(length = 36, updatable = false, nullable = false)
     private String id;
 
+    /**
+     * The Kafka eventId that produced this notification (null for notifications created
+     * via the internal REST endpoint). Used by consumers for IDEMPOTENCY — if the same
+     * event is delivered twice, we detect it via existsByEventId and skip the duplicate.
+     */
+    @Column(name = "event_id")
+    private String eventId;
+
     @Column(nullable = false)
     private String userId;
 

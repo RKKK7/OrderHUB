@@ -10,4 +10,7 @@ public interface NotificationRepository extends JpaRepository<Notification, Stri
     List<Notification> findByUserIdOrderByCreatedAtDesc(String userId, Pageable pageable);
     long countByUserIdAndIsReadFalse(String userId);
     List<Notification> findByUserIdAndIsReadFalse(String userId);
+
+    /** Idempotency check for Kafka consumers — has this event already been processed? */
+    boolean existsByEventId(String eventId);
 }
