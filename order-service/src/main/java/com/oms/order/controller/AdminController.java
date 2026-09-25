@@ -2,7 +2,8 @@ package com.oms.order.controller;
 
 import com.oms.order.dto.*;
 import com.oms.order.dto.StockDTOs.StockItem;
-import com.oms.order.feign.NotificationServiceClient;
+import com.oms.order.event.OrderEvent;
+import com.oms.order.event.OrderEventPublisher;
 import com.oms.order.feign.ProductServiceClient;
 import com.oms.order.model.*;
 import com.oms.order.repository.OrderRepository;
@@ -11,6 +12,7 @@ import com.oms.order.service.OrderMapper;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -20,8 +22,8 @@ public class AdminController {
 
     private final OrderRepository orderRepo;
     private final UserRepository userRepo;
-    private final ProductServiceClient productClient;
-    private final NotificationServiceClient notifClient;
+    private final ProductServiceClient productClient;   // SYNC — critical path (kept)
+    private final OrderEventPublisher eventPublisher;   // ASYNC — notifications via Kafka
 
     /** Valid state transitions — enforced, not advisory */
     private static final Map<String, List<String>> VALID_TRANSITIONS = Map.of(
@@ -34,11 +36,11 @@ public class AdminController {
 
     public AdminController(OrderRepository orderRepo, UserRepository userRepo,
                            ProductServiceClient productClient,
-                           NotificationServiceClient notifClient) {
+                           OrderEventPublisher eventPublisher) {
         this.orderRepo = orderRepo;
         this.userRepo = userRepo;
         this.productClient = productClient;
-        this.notifClient = notifClient;
+        this.eventPublisher = eventPublisher;
     }
 
     private void requireAdmin(String role) {
@@ -65,7 +67,8 @@ public class AdminController {
 
     /**
      * Update order status — enforces the state machine.
-     * CANCELLED triggers stock restoration BEFORE status change.
+     * CANCELLED triggers stock restoration BEFORE status change (SYNC Feign — kept).
+     * Every status change then publishes an order-event to Kafka (ASYNC — new).
      */
     @PutMapping("/orders/{id}/status")
     public OrderDTO updateStatus(
@@ -93,7 +96,7 @@ public class AdminController {
         order.setStatus(newStatus);
         order = orderRepo.save(order);
 
-        // Notify user
+        // Notify user via Kafka
         User user = userRepo.findById(order.getUserId()).orElse(null);
         String orderId = order.getId().substring(0, 8).toUpperCase();
         String message = switch (newStatus) {
@@ -103,7 +106,8 @@ public class AdminController {
             case "CANCELLED"  -> "Your order #" + orderId + " has been cancelled by the seller.";
             default -> "Your order #" + orderId + " status has been updated.";
         };
-        sendNotification(user, order, "ORDER_" + newStatus, "Order " + newStatus.charAt(0) + newStatus.substring(1).toLowerCase(), message);
+        publishOrderEvent(user, order, "ORDER_" + newStatus,
+                "Order " + newStatus.charAt(0) + newStatus.substring(1).toLowerCase(), message);
 
         return OrderMapper.toAdminOrderDTO(order, user);
     }
@@ -157,7 +161,7 @@ public class AdminController {
                     return m;
                 }).toList();
 
-        // Low stock from product-service
+        // Low stock from product-service (SYNC read — fine to keep as Feign)
         List<Map<String, Object>> lowStock = List.of();
         try { lowStock = productClient.getLowStockProducts(); } catch (Exception ignored) {}
 
@@ -182,19 +186,21 @@ public class AdminController {
         }
     }
 
-    private void sendNotification(User user, Order order, String type, String title, String message) {
+    private void publishOrderEvent(User user, Order order, String type, String title, String message) {
         if (user == null) return;
-        try {
-            notifClient.send(NotificationRequest.builder()
-                    .userId(user.getId())
-                    .userEmail(user.getEmail())
-                    .title(title)
-                    .message(message)
-                    .type(type)
-                    .link("/orders/" + order.getId())
-                    .build());
-        } catch (Exception e) {
-            System.err.println("Notification failed: " + e.getMessage());
-        }
+        OrderEvent event = OrderEvent.builder()
+                .eventId(UUID.randomUUID().toString())
+                .eventType(type)
+                .timestamp(Instant.now().toString())
+                .orderId(order.getId())
+                .userId(user.getId())
+                .userEmail(user.getEmail())
+                .totalAmount(order.getTotalAmount())
+                .shippingAddress(order.getShippingAddress())
+                .title(title)
+                .message(message)
+                .link("/orders/" + order.getId())
+                .build();
+        eventPublisher.publish(event);
     }
 }

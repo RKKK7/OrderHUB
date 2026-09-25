@@ -1,309 +1,199 @@
-# 📦 OrderHub — Microservices Order Management System
+# OrderHub — Order Management System (Microservices + Kafka)
 
-A distributed order management platform built with **Spring Boot microservices**, featuring Redis caching with versioned cache-busting, atomic stock reservation, Docker Compose orchestration, and 71 automated tests.
+A Spring Boot microservices system for e-commerce order management, rebuilt on
+**Java 17 / Spring Boot 3.3.13 / Spring Cloud 2023.0.6** and extended with
+**event-driven communication using Apache Kafka**.
 
-## Architecture
+This version keeps the reliable **synchronous** flows where correctness demands them,
+and moves the genuinely **fire-and-forget** work (notifications, stock signals) onto
+Kafka topics.
 
-```
-┌────────────────────────────────────────────────────────┐
-│                      React Frontend                    │
-│                    (localhost:5173)                    │
-└────────────────────────┬───────────────────────────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │    API Gateway      │
-              │     (port 8080)     │
-              │  JWT + Role Headers │
-              └──────────┬──────────┘
-                         │
-          ┌──────────────┼──────────────┐
-          ▼              ▼              ▼
-  ┌──────────────┐┌─────────────┐┌──────────────────┐
-  │   Product    ││   Order     ││  Notification    │
-  │   Service    ││   Service   ││  Service         │
-  │  (port 8081) ││ (port 8082) ││  (port 8083)     │
-  │              ││             ││                  │
-  │  Products    ││  Users      ││  Notifications   │
-  │  Inventory   ││  Orders     ││  Email (SMTP)    │
-  │  Redis Cache ││  OrderItems ││                  │
-  └──────┬───────┘└──────┬──────┘└────────┬─────────┘
-         │               │                │
-         ▼               ▼                ▼
-  ┌──────────┐    ┌───────────┐     ┌───────────┐
-  │  Redis   │    │ PostgreSQL│     │ PostgreSQL│
-  │          │    │ (order_db)│     │(notif_db) │
-  └──────────┘    └───────────┘     └───────────┘
-         │
-  ┌──────────┐
-  │PostgreSQL│
-  │(product_ │
-  │   db)    │
-  └──────────┘
-```
+---
 
-## Tech Stack
+## Services
 
-| Layer | Technology |
-|-------|-----------|
-| Backend | Java 17, Spring Boot 3.3, Spring Cloud 2023.0.2 |
-| Service Discovery | Spring Cloud Netflix Eureka |
-| API Gateway | Spring Cloud Gateway (WebFlux) |
-| Inter-Service Communication | Spring Cloud OpenFeign |
-| Authentication | JWT (jjwt 0.12.5) with role-based claims |
-| Database | PostgreSQL 16 (database-per-service pattern) |
-| Caching | Redis 7 with versioned cache-busting |
-| Testing | JUnit 5 + Mockito (71 tests) |
-| Containerization | Docker + Docker Compose |
-| Frontend | React 18, Vite, Tailwind CSS, React Router v6 |
+| Service                | Port | Responsibility                                                        |
+|------------------------|------|----------------------------------------------------------------------|
+| `eureka-server`        | 8761 | Service discovery registry                                           |
+| `api-gateway`          | 8080 | Routing, JWT validation, role header injection, CORS                 |
+| `product-service`      | 8081 | Product catalog, inventory, Redis cache, **stock-events producer**   |
+| `order-service`        | 8082 | Users, orders, orchestration, **order-events producer**              |
+| `notification-service` | 8083 | In-app + email notifications, **Kafka consumer** (leaf node)         |
 
-## Services Overview
+Infrastructure: **PostgreSQL 16** (one database per service), **Redis 7**
+(product cache), **Apache Kafka** (KRaft mode — no Zookeeper).
 
-| Service | Port | Database | Description |
-|---------|------|----------|-------------|
-| `eureka-server` | 8761 | — | Service discovery registry |
-| `api-gateway` | 8080 | — | JWT validation, role extraction, routing, CORS |
-| `product-service` | 8081 | `product_db` | Product catalog, inventory, Redis caching |
-| `order-service` | 8082 | `order_db` | Users, orders, auth (JWT signing), Feign orchestrator |
-| `notification-service` | 8083 | `notification_db` | In-app + email notifications (leaf node) |
+---
 
-## API Endpoints
+## What is synchronous vs. asynchronous — and why
 
-### Product Service — Public (No Auth Required)
+The rebuild did **not** replace all communication with Kafka. It replaced only what
+should be async. This distinction is the whole point of the exercise.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/products` | List products (supports `?category=`, `?search=`, `?sort=`, `?page=`, `?limit=`) |
-| `GET` | `/api/products/{id}` | Product detail |
-| `GET` | `/api/products/categories` | List all categories |
+### Stayed SYNCHRONOUS (Feign, request/response)
+- **`order-service -> product-service : check-and-reserve`**
+  Placing an order needs an *immediate* yes/no on stock. The caller cannot proceed
+  without the answer, and stock must be decremented atomically (all-or-nothing) to
+  prevent overselling. A fire-and-forget event cannot give a synchronous decision.
+- **`order-service -> product-service : restore-stock`** (cancellation / compensation)
+  The consistency guarantee ("stock is restored *before* the order is marked
+  cancelled; if restore fails, nothing changes") depends on a synchronous result.
+- **`order-service -> product-service : low-stock`** (admin dashboard read)
+  A simple read for a screen the admin is looking at right now.
 
-### Product Service — Admin Only
+### Moved to KAFKA (async, event-driven)
+- **Order lifecycle notifications** — `order-service` publishes `order-events`;
+  `notification-service` consumes them and creates the in-app notification + email.
+  Previously this was a synchronous Feign call; if notification-service was down, the
+  notification was lost. Now the event is durable — it waits in the topic and is
+  processed when the consumer is back.
+- **Stock signals** — `product-service` publishes `stock-events` (reserved, restored,
+  updated, low-stock). `notification-service` monitors them and raises low-stock alerts.
+  New consumers (analytics, audit) could subscribe later **without touching
+  product-service** — the core benefit of event-driven design.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/products/manage` | All products with exact stock (admin view) |
-| `GET` | `/api/products/low-stock` | Products below stock threshold |
-| `POST` | `/api/products` | Create product |
-| `PUT` | `/api/products/{id}` | Update product |
-| `PUT` | `/api/products/{id}/stock` | Update stock quantity |
-| `PUT` | `/api/products/{id}/status` | Activate/deactivate product |
+---
 
-### Product Service — Internal (Feign Only, Not Gateway-Routed)
+## Kafka topics
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/internal/products/check-and-reserve` | Atomic stock check + reservation |
-| `POST` | `/internal/products/restore-stock` | Restore stock (cancellation/compensation) |
-| `GET` | `/internal/products/{id}` | Product lookup by ID |
-| `GET` | `/internal/products/batch?ids=` | Batch product lookup |
-| `GET` | `/internal/products/low-stock` | Low stock products (for admin dashboard) |
+| Topic          | Producer          | Key         | Partitions | Event types                                                             |
+|----------------|-------------------|-------------|------------|------------------------------------------------------------------------|
+| `order-events` | order-service     | `userId`    | 3          | `ORDER_PLACED`, `ORDER_CONFIRMED`, `ORDER_SHIPPED`, `ORDER_DELIVERED`, `ORDER_CANCELLED` |
+| `stock-events` | product-service   | `productId` | 3          | `STOCK_RESERVED`, `STOCK_RESTORED`, `STOCK_UPDATED`, `LOW_STOCK_ALERT`  |
 
-### Order Service — Auth (No Auth Required)
+**Why a partition key?** Kafka guarantees message order *within a partition*, and all
+records with the same key go to the same partition. Keying `order-events` by `userId`
+means one user's events are always consumed in the order they happened. Keying
+`stock-events` by `productId` keeps each product's history ordered.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/users/register` | Register (user or admin with secret) |
-| `POST` | `/api/users/login` | Login (returns JWT with role claim) |
+## Consumer groups (in notification-service)
 
-### Order Service — User
+| Group                 | Topic          | What it does                                                     |
+|-----------------------|----------------|-----------------------------------------------------------------|
+| `notification-group`  | `order-events` | Saves the in-app notification and sends the email               |
+| `stock-monitor-group` | `stock-events` | On `LOW_STOCK_ALERT`, records a broadcast admin notification    |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/users/me` | Current user profile |
-| `PUT` | `/api/users/me` | Update profile (name, phone, address) |
-| `POST` | `/api/orders` | Place order |
-| `GET` | `/api/orders/my` | User's order history |
-| `GET` | `/api/orders/{id}` | Order detail (own orders only) |
-| `PUT` | `/api/orders/{id}/cancel` | Cancel order (PENDING/CONFIRMED only) |
+Two **independent** groups: they track their own offsets and never interfere. Scale a
+group horizontally by running more instances — Kafka rebalances the 3 partitions across
+them automatically, and each message is handled by exactly one member of the group.
 
-### Order Service — Admin Only
+---
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/admin/orders` | All orders (filterable by `?status=`) |
-| `PUT` | `/api/admin/orders/{id}/status` | Update order status |
-| `PUT` | `/api/admin/orders/{id}/cancel` | Cancel any order |
-| `GET` | `/api/admin/stats` | Dashboard stats (revenue, top products, low stock) |
-
-### Notification Service — Authenticated Users
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/notifications` | List notifications with unread count |
-| `PUT` | `/api/notifications/{id}/read` | Mark one as read |
-| `PUT` | `/api/notifications/read-all` | Mark all as read |
-
-### Notification Service — Internal (Feign Only)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/internal/notifications/send` | Create notification + send email |
-
-## Order Status State Machine
+## Event flow example — placing an order
 
 ```
-PENDING ──► CONFIRMED ──► SHIPPED ──► DELIVERED
-   │              │
-   └──────────────┴────────► CANCELLED
-                              (only from PENDING or CONFIRMED)
+Client ──POST /api/orders──> api-gateway ──> order-service
+                                                 │
+                    (SYNC Feign) check-and-reserve │ ──> product-service  [atomic stock decrement]
+                                                 │ <── reservation OK
+                                                 │
+                                          save Order (DB)
+                                                 │
+                    (ASYNC Kafka) publish ORDER_PLACED ──> [order-events topic]
+                                                 │
+                                    HTTP 200 returned to client   ← client is NOT blocked on notify
+                                                 
+[order-events topic] ──> notification-service (notification-group)
+                             ├── save in-app notification
+                             └── send email
+
+Meanwhile product-service also published STOCK_RESERVED (and LOW_STOCK_ALERT if the
+reservation pushed the product to/below its threshold) ──> [stock-events topic]
+                             └──> notification-service (stock-monitor-group)
 ```
 
-Transitions are enforced in code — invalid state changes return `400 Bad Request`.
+Key point: the client's HTTP response no longer waits on notification-service, and a
+notification-service outage cannot fail an order or lose a notification.
 
-## Redis Caching Strategy
+---
 
-Caching is implemented in `product-service` only using a **versioned cache-busting** pattern:
+## Kafka concepts demonstrated in the code
 
-| Cached Data | Key Pattern | Invalidation | TTL |
-|------------|-------------|-------------|-----|
-| Single product | `products:id:{productId}` | Direct `DEL` on update | 10 min |
-| Product list | `products:list:v{n}:{category}:{sort}:{page}` | Version bump | 5 min |
-| Search results | `products:search:v{n}:{query}:{sort}:{page}` | Version bump | 2 min |
-| Category list | `products:categories:v{n}` | Version bump | 10 min |
-| Stock levels | **Never cached** | N/A | N/A |
+- **Producer / `KafkaTemplate`** — `KafkaProducerConfig` + `OrderEventPublisher` /
+  `StockEventPublisher`.
+- **Topics, partitions, replicas** — `KafkaTopicConfig` (`NewTopic` beans, auto-created
+  on startup by the producer service that owns the topic).
+- **Partition keys & ordering** — publishing with `userId` / `productId` as the key.
+- **Consumers, `@KafkaListener`, consumer groups** — `OrderEventListener`,
+  `StockEventListener`.
+- **Offsets & `auto-offset-reset=earliest`** — new groups start from the beginning.
+- **JSON serialization across services without a shared library** — type headers are
+  turned off on the producer; the consumer deserializes into its own mirror class of
+  the same JSON shape.
+- **Idempotent consumers** — each event carries an `eventId`; the consumer skips one it
+  has already processed (Kafka is at-least-once, so duplicates can happen).
+- **Poison-pill safety** — `ErrorHandlingDeserializer` wraps the JSON deserializer so a
+  malformed message doesn't crash the consumer.
 
-**How version-busting works:** A global counter (`products:cache-version`) is incremented on every product write. All list/search cache keys include this version — old keys become unreachable instantly. O(1) invalidation regardless of cache size.
+A production hardening noted in the code (`StockEventPublisher`): use the
+**Transactional Outbox** pattern so an event is never published for a transaction that
+later rolls back.
 
-**Local dev:** Caching is disabled by default (`CACHE_ENABLED=false`). The app uses `NoOpProductCacheService` which skips Redis entirely. Docker Compose sets `CACHE_ENABLED=true`.
+---
 
-## Testing
-
-**71 tests total**, all using JUnit 5 + Mockito with zero infrastructure dependencies:
-
-| Service | Tests | Coverage |
-|---------|-------|----------|
-| `api-gateway` | 18 | JWT validation, public/protected paths, role extraction |
-| `product-service` | 18 | CRUD, admin enforcement, atomic stock reservation, rollback |
-| `order-service` | 23 | Register, login, place order, cancel, compensation, state machine |
-| `notification-service` | 12 | Send notification, email trigger, mark read, auth |
-
-Run all tests:
-```bash
-cd <service-folder>
-mvn test
-```
-
-Tests also run during Docker image builds — a failing test blocks the image from being created.
-
-## Running the Project
+## Running it
 
 ### Prerequisites
-- Java 17
-- Maven
-- Node.js 18+
-- Docker & Docker Compose
-- PostgreSQL (for local dev only)
+- JDK 21, Maven 3.9+ (only if running services outside Docker)
+- Docker + Docker Compose
 
-### Option 1 — Docker Compose (Recommended)
-
-**Start all 7 containers with one command:**
-
+### With Docker Compose (recommended)
 ```bash
-docker-compose up --build
+cp .env .env      # then edit .env and set real values
+docker compose up --build
 ```
+Startup order is handled by health checks: Postgres, Redis, and **Kafka** come up first,
+then Eureka, the gateway, and the services. First build downloads dependencies and can
+take a few minutes.
 
-This automatically:
-- Creates 3 PostgreSQL databases (`product_db`, `order_db`, `notification_db`)
-- Starts Redis
-- Starts Eureka, waits for healthy
-- Starts all 3 services in dependency order
-- Runs all 71 tests during build — broken code never reaches a container
+Once healthy:
+- Eureka dashboard: http://localhost:8761
+- API gateway:      http://localhost:8080
 
-**Verify:** Open `http://localhost:8761` — all 4 services should show `UP`.
+### Verifying Kafka is working
+Watch the logs — you should see the producer log lines
+(`Published ORDER_PLACED ... -> partition N, offset M`) and the consumer log lines
+(`Consuming ORDER_PLACED ...`) after you place an order.
 
-**Start the frontend:**
-
-Copy the frontend from the OrderHUB-Frontend repository
+Optional — inspect topics from inside the broker container:
 ```bash
-cd oms-frontend
-npm install
-npm run dev
+docker exec -it oms-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+docker exec -it oms-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+    --bootstrap-server localhost:9092 --topic order-events --from-beginning
 ```
 
-Open `http://localhost:5173`
+### Running a single service in IntelliJ
+Each service reads `KAFKA_BOOTSTRAP` (default `localhost:9092`), `DB_*`, `EUREKA_URL`,
+etc. from environment variables with sensible localhost defaults. You'll need Postgres,
+Redis, and Kafka reachable on localhost (e.g. `docker compose up postgres redis kafka`).
 
-**Stop everything:**
-```bash
-docker-compose down        # stop containers
-docker-compose down -v     # also wipe database data
-```
+---
 
-### Option 2 — Local Development (IntelliJ)
+## Version notes
 
-**1. Create databases:**
-```sql
-CREATE DATABASE product_db;
-CREATE DATABASE order_db;
-CREATE DATABASE notification_db;
-```
+- **Spring Boot 3.3.13** (final OSS patch of the 3.3 line), **Java 17**,
+  **Spring Cloud 2023.0.6** ("Leyton"). This Spring Cloud train is built and tested
+  against Spring Boot 3.3.x, so the pairing is the officially supported one.
+- **Spring Cloud Gateway** uses the classic `spring-cloud-starter-gateway` starter and
+  the classic `spring.cloud.gateway.routes[...]` route configuration.
+- **spring-kafka** version is managed by the Spring Boot 3.3.13 parent (resolves to the
+  Spring Kafka 3.2.x line) — intentionally not pinned.
+- **JJWT** pinned at 0.12.5.
+- Dockerfiles use `maven:3.9-eclipse-temurin-17` (build) and
+  `eclipse-temurin:17-jre-alpine` (runtime).
 
-**2. Start services in order:**
-```
-eureka-server    → no env vars needed
-api-gateway      → JWT_SECRET, CLIENT_URL
-product-service  → DB_PASSWORD, DB_URL, DB_USER
-order-service    → DB_PASSWORD, DB_URL, DB_USER, JWT_SECRET, ADMIN_SECRET
-notification-service → DB_PASSWORD, DB_URL, DB_USER, EMAIL_USER, EMAIL_PASS
-```
+---
 
-**3. Start frontend:**
-```bash
-cd oms-frontend
-npm install
-npm run dev
-```
-
-## Environment Variables
-
-### Required for Docker Compose (`.env` file)
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `DB_PASSWORD` | PostgreSQL password | `yourpassword` |
-| `JWT_SECRET` | JWT signing key (min 32 chars) | `mK9pX3vL7n...` |
-| `ADMIN_SECRET` | Admin registration secret | `OmsAdmin2026Secret` |
-| `CLIENT_URL` | Frontend URL (for CORS) | `http://localhost:5173` |
-| `EMAIL_USER` | Gmail address (for notifications) | `you@gmail.com` |
-| `EMAIL_PASS` | Gmail app password | `abcdefghijklmnop` |
-
-### Auto-Injected by Docker Compose (Not in `.env`)
-
-| Variable | Value | Used By |
-|----------|-------|---------|
-| `DB_URL` | `jdbc:postgresql://postgres:5432/{db}` | All 3 services |
-| `DB_USER` | `postgres` | All 3 services |
-| `REDIS_HOST` | `redis` | product-service |
-| `CACHE_ENABLED` | `true` | product-service |
-| `EUREKA_URL` | `http://eureka-server:8761/eureka/` | All services |
-
-## Project Structure
+## Project layout
 
 ```
-OrderHUB/
-├── docker-compose.yml
-├── .env                          (not committed — in .gitignore)
-├── .gitignore
-├── .dockerignore
-├── db-init/
-│   └── init-databases.sh
+orderManagementSystem/
+├── docker-compose.yml          # all infra + services (incl. kafka in KRaft mode)
+├── .env.example                # copy to .env and fill in
+├── db-init/                    # creates the 3 per-service databases
 ├── eureka-server/
 ├── api-gateway/
-├── product-service/
-├── order-service/
-├── notification-service/
-└── oms-frontend/
+├── product-service/            # + event/  config/ (Kafka producer)
+├── order-service/              # + event/  config/ (Kafka producer)
+└── notification-service/       # + event/ (Kafka consumers) config/
 ```
-
-## Key Design Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| No shared library | Eliminates `.m2` sync issues — each service is fully self-contained |
-| Users table in order-service | No split entity ownership — prevents "registered but profile missing" bugs |
-| JWT role claim + gateway header injection | Zero Feign calls for authorization — role check is a header read |
-| Atomic `UPDATE WHERE stock >= qty` | Prevents overselling at the database level — no application locking |
-| Stock restore before status change | If restore fails, order stays unchanged — no inconsistent state |
-| Compensation on failed order save | Auto-restores stock if order DB write fails after reservation |
-| All DTO timestamps as String | Prevents Jackson/Redis `Instant` serialization failures |
-| `CACHE_ENABLED=false` default | App runs without Redis locally — caching is opt-in via Docker |
-| Notification stores `userEmail` | Leaf node never calls back — no circular service dependencies |
