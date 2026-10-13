@@ -1,0 +1,73 @@
+name: CD - Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm deployment'
+        required: true
+        default: ''
+
+jobs:
+  deploy:
+    name: Deploy to Oracle Cloud VM
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm == 'deploy'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            set -e
+
+            echo "========================================="
+            echo "  OrderHub Deployment - $(date)"
+            echo "========================================="
+
+            # Navigate to project directory
+            cd ~/orderhub
+
+            # Login to GHCR
+            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ github.repository_owner }} --password-stdin
+
+            # Pull latest images
+            echo ">>> Pulling latest images..."
+            docker compose -f docker-compose.prod.yml pull
+
+            # Restart services with new images
+            echo ">>> Restarting services..."
+            docker compose -f docker-compose.prod.yml up -d
+
+            # Wait for services to start
+            echo ">>> Waiting for services to stabilize..."
+            sleep 30
+
+            # Health check
+            echo ">>> Running health checks..."
+            for service in eureka-server api-gateway product-service order-service notification-service; do
+              STATUS=$(docker inspect --format='{{.State.Status}}' orderhub-${service}-1 2>/dev/null || echo "not found")
+              echo "  ${service}: ${STATUS}"
+            done
+
+            # Show running containers
+            echo ""
+            echo ">>> Running containers:"
+            docker compose -f docker-compose.prod.yml ps
+
+            echo ""
+            echo ">>> Deployment complete!"
+
+      - name: Deployment Summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Time:** $(date -u)" >> $GITHUB_STEP_SUMMARY
